@@ -46,14 +46,44 @@ if [ -z "${QEMU_BIN}" ]; then
         apk add --no-cache qemu-system-aarch64 qemu-img
         QEMU_BIN="qemu-system-aarch64"
     elif command -v pkg >/dev/null 2>&1; then
-        pkg install -y qemu-utils
-        QEMU_BIN="qemu-system-aarch64"
+        # Termux: install the QEMU system emulator matching the host architecture.
+        # Package names use hyphens (e.g. qemu-system-aarch64); the installed
+        # binary uses underscores (e.g. qemu-system-aarch64), so the re-probe
+        # loop below will find it correctly.
+        case "${ARCH}" in
+            aarch64|arm64) pkg install -y qemu-system-aarch64 ;;
+            armv7l|armhf)  pkg install -y qemu-system-arm ;;
+            *)             pkg install -y qemu-system-x86-64-headless ;;
+        esac
+        # Re-probe after install
+        for candidate in qemu-system-aarch64 qemu-system-arm qemu-system-x86_64; do
+            if command -v "${candidate}" >/dev/null 2>&1; then
+                QEMU_BIN="${candidate}"
+                break
+            fi
+        done
+        if [ -z "${QEMU_BIN}" ]; then
+            log "ERROR: QEMU install succeeded but binary not found. Install qemu-system manually."
+            exit 1
+        fi
     else
         log "ERROR: Cannot install QEMU automatically. Please install qemu-system manually."
         exit 1
     fi
 fi
 log "QEMU binary: ${QEMU_BIN}"
+
+# ── Derive the guest architecture from the selected QEMU binary ───────────────
+# This may differ from ARCH when cross-emulating (e.g. qemu-system-x86_64 on
+# an aarch64 host).  build-vm1.sh uses QEMU_ARCH — not ARCH — to choose the
+# correct -machine type, CPU model, and Alpine ISO.
+case "${QEMU_BIN}" in
+    *aarch64*)    QEMU_ARCH="aarch64" ;;
+    *-arm|*-armhf|*-arm-*) QEMU_ARCH="armv7l"  ;;
+    *x86_64*)     QEMU_ARCH="x86_64"  ;;
+    *)            QEMU_ARCH="${ARCH}"  ;;
+esac
+log "QEMU guest architecture: ${QEMU_ARCH}"
 
 # ── Derive safe VM₁ specs (half of host, min 1 CPU / 256 MB / 2 GB) ──────────
 VM1_CPUS="$(( HOST_CPUS / 2 > 0 ? HOST_CPUS / 2 : 1 ))"
@@ -67,6 +97,7 @@ KVM_AVAILABLE=${KVM_AVAILABLE}
 HOST_CPUS=${HOST_CPUS}
 HOST_RAM_MB=${HOST_RAM_MB}
 QEMU_BIN=${QEMU_BIN}
+QEMU_ARCH=${QEMU_ARCH}
 VM1_CPUS=${VM1_CPUS}
 VM1_RAM_MB=${VM1_RAM_MB}
 VM1_DISK_GB=${VM1_DISK_GB}
