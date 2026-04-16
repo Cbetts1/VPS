@@ -200,5 +200,61 @@ nohup "${QEMU_BIN}" \
     }
 
 log "VM₁ started. PID file: ${VM1_DIR}/vm1.pid"
-log "Wait ~60s then: ssh -p ${VM1_SSH_PORT} root@localhost"
-log "Inside VM₁ run: sh /mnt/host-scripts/build-vm2.sh"
+
+# ── Wait for VM₁ SSH to become ready ─────────────────────────────────────────
+# TCG software emulation (no KVM) on a phone can take 10-20 minutes to fully
+# boot Alpine and start sshd.  Poll the port instead of asking the user to
+# guess how long to wait.
+log "Polling for SSH on localhost:${VM1_SSH_PORT} (TCG may take 10-20 min) …"
+
+_vm1_port_open() {
+    if command -v nc >/dev/null 2>&1; then
+        nc -z -w 3 127.0.0.1 "${VM1_SSH_PORT}" 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - <<PYEOF 2>/dev/null
+import socket, sys
+s = socket.socket()
+s.settimeout(3)
+sys.exit(0 if s.connect_ex(('127.0.0.1', ${VM1_SSH_PORT})) == 0 else 1)
+PYEOF
+    else
+        # Last resort: attempt an SSH handshake and accept any non-reset result
+        _r="$(ssh -o BatchMode=yes -o ConnectTimeout=4 \
+            -o StrictHostKeyChecking=no -o NumberOfPasswordPrompts=0 \
+            -p "${VM1_SSH_PORT}" root@localhost true 2>&1 || true)"
+        case "${_r}" in
+            *"Connection reset"*|*"Connection refused"*|*"connect: "*) return 1 ;;
+            *) return 0 ;;
+        esac
+    fi
+}
+
+_max_wait=1200   # 20 minutes
+_interval=15     # check every 15 seconds
+_waited=0
+_ready=false
+while [ "${_waited}" -lt "${_max_wait}" ]; do
+    if _vm1_port_open; then
+        _ready=true
+        break
+    fi
+    printf '.'
+    sleep "${_interval}"
+    _waited=$(( _waited + _interval ))
+done
+printf '\n'
+
+if [ "${_ready}" = "true" ]; then
+    log "VM₁ SSH is ready (waited ~${_waited}s)"
+    log "Connect:  ssh -p ${VM1_SSH_PORT} -o StrictHostKeyChecking=no root@localhost  (password: vps2025)"
+    if [ "${VIRTFS_AVAILABLE:-false}" = "true" ]; then
+        log "Inside VM₁ run: sh /mnt/host-scripts/build-vm2.sh"
+    else
+        log "build-vm2.sh is running automatically inside VM₁ via cloud-init."
+        log "Monitor: ssh -p ${VM1_SSH_PORT} -o StrictHostKeyChecking=no root@localhost 'tail -f /var/log/build-vm2.log'"
+    fi
+else
+    log "WARNING: SSH did not become ready within ${_max_wait}s — VM₁ may still be booting."
+    log "Check VM log:  tail -f ${VM1_LOG}"
+    log "Once ready:    ssh -p ${VM1_SSH_PORT} -o StrictHostKeyChecking=no root@localhost  (password: vps2025)"
+fi
