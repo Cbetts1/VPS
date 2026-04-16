@@ -6,13 +6,27 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VPS_DIR="/tmp/vps"
 VPS_SSH_PORT=10080
 VPS_API_PORT=10081
 VPS_WEB_PORT=10082
 
 log() { printf '[build-vps] %s\n' "$*"; }
+
+# ── Ensure the full repo is available for sharing with the VPS ───────────────
+# The virtfs share for VPS needs the complete repo (all layers).
+# self-update.sh clones to /opt/vps-chain; if it is missing (e.g. we arrived
+# here from a rebuilt VM₂ that didn't call build-vm2.sh), clone it now.
+REPO_ROOT="/opt/vps-chain"
+if [ ! -d "${REPO_ROOT}/.git" ]; then
+    log "Cloning full repo to ${REPO_ROOT} …"
+    apk add --no-cache git >/dev/null 2>&1 || true
+    git clone --depth=1 https://github.com/Cbetts1/VPS "${REPO_ROOT}" 2>&1 | tee /var/log/git-clone-vps.log || true
+    if [ ! -d "${REPO_ROOT}/layer3-vps" ]; then
+        log "ERROR: Repo clone to ${REPO_ROOT} failed — check /var/log/git-clone-vps.log"
+        exit 1
+    fi
+fi
 
 # ── Validate pre-conditions ───────────────────────────────────────────────────
 log "Final validation before VPS build …"
@@ -40,7 +54,13 @@ ACCEL_ARG=""
 case "${ARCH:-x86_64}" in
     aarch64|arm64) QEMU_MACHINE_ARGS="-machine virt -cpu cortex-a57" ;;
     armv7l|armhf)  QEMU_MACHINE_ARGS="-machine virt -cpu cortex-a15" ;;
-    *)             QEMU_MACHINE_ARGS="-machine q35" ;;
+    *)
+        if [ "${KVM_AVAILABLE:-false}" = "true" ]; then
+            QEMU_MACHINE_ARGS="-machine q35 -cpu host"
+        else
+            QEMU_MACHINE_ARGS="-machine q35 -cpu qemu64"
+        fi
+        ;;
 esac
 
 ALPINE_VERSION="3.19.1"
@@ -74,6 +94,8 @@ fi
 SEED_DIR="${VPS_DIR}/seed"
 mkdir -p "${SEED_DIR}"
 
+# Note: 'qemu-system-x86_64' is not a valid Alpine apk package name;
+# the correct package is 'qemu-system-x86' which provides the binary.
 cat > "${SEED_DIR}/user-data" <<'USERDATA'
 #cloud-config
 hostname: vps01
@@ -85,14 +107,32 @@ packages:
   - wget
   - iptables
   - wireguard-tools
-  - qemu-system-x86_64
+  - qemu-system-x86
   - qemu-img
   - git
 package_update: true
+chpasswd:
+  list: |
+    root:vps2025
+  expire: false
+ssh_pwauth: true
+disable_root: false
 runcmd:
-  - mkdir -p /mnt/host-scripts
-  - mount -t 9p -o trans=virtio,version=9p2000.L host_scripts /mnt/host-scripts || true
-  - rc-update add sshd default && rc-service sshd start
+  - rc-update add sshd default
+  - rc-service sshd start
+  # Mount virtfs repo share, or fall back to git clone
+  - |
+    mkdir -p /mnt/host-scripts
+    if ! mount -t 9p -o trans=virtio,version=9p2000.L host_scripts /mnt/host-scripts 2>/dev/null; then
+      apk add --no-cache git >/dev/null 2>&1 || true
+      if [ ! -d /mnt/host-scripts/.git ]; then
+        git clone --depth=1 https://github.com/Cbetts1/VPS /mnt/host-scripts 2>&1 | tee /var/log/git-clone.log || true
+      fi
+    fi
+    if [ ! -d /mnt/host-scripts/layer3-vps ]; then
+      echo "[cloud-init] ERROR: layer3-vps not found — check /var/log/git-clone.log" >&2
+      exit 1
+    fi
   # Run all VPS layer setup scripts
   - sh /mnt/host-scripts/layer3-vps/vhost/setup-filesystem.sh
   - sh /mnt/host-scripts/layer3-vps/vcpu/instruction-engine.sh
@@ -113,12 +153,25 @@ if [ ! -f "${SEED_ISO}" ]; then
     if command -v xorriso >/dev/null 2>&1; then
         xorriso -as mkisofs -output "${SEED_ISO}" -volid cidata -joliet -rock \
             "${SEED_DIR}/user-data" "${SEED_DIR}/meta-data" 2>/dev/null
-        SEED_ARG="-drive file=${SEED_ISO},media=cdrom,readonly=on"
+        SEED_ARG="-drive file=${SEED_ISO},media=cdrom,readonly=on,index=2"
+    elif command -v python3 >/dev/null 2>&1 && [ -f "${REPO_ROOT}/layer0-phone/make-seed-iso.py" ]; then
+        python3 "${REPO_ROOT}/layer0-phone/make-seed-iso.py" "${SEED_ISO}" "${SEED_DIR}"
+        SEED_ARG="-drive file=${SEED_ISO},media=cdrom,readonly=on,index=2"
     else
+        log "WARNING: No ISO tool — VPS seed skipped; cloud-init fallback will use git clone"
         SEED_ARG=""
     fi
 else
-    SEED_ARG="-drive file=${SEED_ISO},media=cdrom,readonly=on"
+    SEED_ARG="-drive file=${SEED_ISO},media=cdrom,readonly=on,index=2"
+fi
+
+# ── Virtfs: share full repo into VPS (only if REPO_ROOT exists) ──────────────
+VIRTFS_ARG=""
+if [ -d "${REPO_ROOT}" ]; then
+    VIRTFS_ARG="-virtfs local,path=${REPO_ROOT},mount_tag=host_scripts,security_model=none,id=scripts"
+    log "Virtfs enabled: ${REPO_ROOT} → host_scripts"
+else
+    log "REPO_ROOT not found — VPS scripts will be git-cloned by cloud-init"
 fi
 
 # ── Launch VPS ────────────────────────────────────────────────────────────────
@@ -136,14 +189,14 @@ VPS_LOG="${VPS_DIR}/vps.log"
     -smp 4 \
     -m 4096M \
     -drive "file=${VPS_DISK},format=qcow2,if=virtio" \
-    -drive "file=${ISO_FILE},media=cdrom,readonly=on" \
+    -drive "file=${ISO_FILE},media=cdrom,readonly=on,index=1" \
     ${SEED_ARG} \
     -netdev "user,id=net0,\
 hostfwd=tcp::${VPS_SSH_PORT}-:22,\
 hostfwd=tcp::${VPS_API_PORT}-:8080,\
 hostfwd=tcp::${VPS_WEB_PORT}-:80" \
     -device "virtio-net-pci,netdev=net0" \
-    -virtfs "local,path=${REPO_ROOT},mount_tag=host_scripts,security_model=none,id=scripts" \
+    ${VIRTFS_ARG} \
     -serial "file:${VPS_LOG}" \
     -display none &
 
