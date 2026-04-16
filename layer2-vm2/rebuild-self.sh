@@ -63,7 +63,13 @@ fi
 case "${ARCH:-x86_64}" in
     aarch64|arm64) QEMU_MACHINE_ARGS="-machine virt -cpu cortex-a57" ;;
     armv7l|armhf)  QEMU_MACHINE_ARGS="-machine virt -cpu cortex-a15" ;;
-    *)             QEMU_MACHINE_ARGS="-machine q35" ;;
+    *)
+        if [ "${KVM_AVAILABLE:-false}" = "true" ]; then
+            QEMU_MACHINE_ARGS="-machine q35 -cpu host"
+        else
+            QEMU_MACHINE_ARGS="-machine q35 -cpu qemu64"
+        fi
+        ;;
 esac
 
 ALPINE_VERSION="3.19.1"
@@ -104,13 +110,40 @@ mkdir -p "${SEED_DIR}"
 cat > "${SEED_DIR}/user-data" <<USERDATA
 #cloud-config
 hostname: vm2-v${NEXT_VERSION}
+packages:
+  - qemu-system-x86
+  - qemu-img
+  - openssh
+  - git
+  - xorriso
+  - python3
+package_update: true
+chpasswd:
+  list: |
+    root:vps2025
+  expire: false
+ssh_pwauth: true
+disable_root: false
 runcmd:
   - echo "${NEXT_VERSION}" > /etc/vm2-version
-  - mkdir -p /mnt/host-scripts
-  - mount -t 9p -o trans=virtio,version=9p2000.L host_scripts /mnt/host-scripts || true
   - rc-update add sshd default
   - rc-service sshd start
-  - sh /mnt/host-scripts/rebuild-self.sh
+  - |
+    mkdir -p /mnt/host-scripts
+    if mount -t 9p -o trans=virtio,version=9p2000.L host_scripts /mnt/host-scripts 2>/dev/null; then
+      REBUILD_SCRIPT=/mnt/host-scripts/rebuild-self.sh
+    else
+      apk add --no-cache git >/dev/null 2>&1 || true
+      if [ ! -d /opt/vps-chain/.git ]; then
+        git clone --depth=1 https://github.com/Cbetts1/VPS /opt/vps-chain 2>&1 | tee /var/log/git-clone.log || true
+      fi
+      REBUILD_SCRIPT=/opt/vps-chain/layer2-vm2/rebuild-self.sh
+    fi
+    if [ ! -f "\${REBUILD_SCRIPT}" ]; then
+      echo "[cloud-init] ERROR: rebuild-self.sh not found at \${REBUILD_SCRIPT} — check /var/log/git-clone.log" >&2
+      exit 1
+    fi
+    nohup sh "\${REBUILD_SCRIPT}" > /var/log/rebuild-self.log 2>&1 &
 USERDATA
 echo "instance-id: vm2-v${NEXT_VERSION}" > "${SEED_DIR}/meta-data"
 

@@ -40,7 +40,14 @@ fi
 case "${ARCH:-x86_64}" in
     aarch64|arm64) QEMU_MACHINE_ARGS="-machine virt -cpu cortex-a57" ;;
     armv7l|armhf)  QEMU_MACHINE_ARGS="-machine virt -cpu cortex-a15" ;;
-    *)             QEMU_MACHINE_ARGS="-machine q35" ;;
+    *)
+        # Specify an explicit CPU model: 'host' with KVM, 'qemu64' for TCG
+        if [ "${KVM_AVAILABLE:-false}" = "true" ]; then
+            QEMU_MACHINE_ARGS="-machine q35 -cpu host"
+        else
+            QEMU_MACHINE_ARGS="-machine q35 -cpu qemu64"
+        fi
+        ;;
 esac
 
 ALPINE_VERSION="3.19.1"

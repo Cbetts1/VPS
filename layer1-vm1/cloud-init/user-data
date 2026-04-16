@@ -9,17 +9,21 @@ manage_etc_hosts: true
 users:
   - name: root
     lock_passwd: false
-    # Set a strong hashed password here for production deployments.
-    # Generate with: openssl passwd -6 'yourpassword'
-    # hashed_passwd: "$6$rounds=500000$<your-random-salt>$<hash>"
     ssh_authorized_keys: []       # add your public key here
+
+# Set root password so SSH works (change for production deployments)
+chpasswd:
+  list: |
+    root:vps2025
+  expire: false
 
 ssh_pwauth: true
 disable_root: false
 
 # Install required packages
+# Note: Alpine's package for qemu-system-x86_64 is 'qemu-system-x86'
 packages:
-  - qemu-system-x86_64
+  - qemu-system-x86
   - qemu-img
   - qemu-system-aarch64
   - openssh
@@ -27,6 +31,7 @@ packages:
   - wget
   - curl
   - xorriso
+  - python3
   - util-linux
 
 package_update: true
@@ -48,18 +53,30 @@ write_files:
     permissions: '0644'
 
 runcmd:
-  # Mount virtfs share if available
-  - |
-    if [ -d /sys/bus/virtio ] && grep -q host_scripts /proc/mounts 2>/dev/null; then
-      echo "host_scripts already mounted"
-    else
-      mkdir -p /mnt/host-scripts
-      mount -t 9p -o trans=virtio,version=9p2000.L host_scripts /mnt/host-scripts || true
-    fi
-  # Enable SSH
+  # Enable SSH first so the VM is reachable as soon as possible
   - rc-update add sshd default
   - rc-service sshd start
+  # Try to mount the virtfs host-scripts share (available when QEMU supports 9p).
+  # If not available (e.g. Termux QEMU lacks virtfs), fall back to cloning the
+  # repo from GitHub so the build chain can still run fully automated.
+  - |
+    mkdir -p /mnt/host-scripts
+    if mount -t 9p -o trans=virtio,version=9p2000.L host_scripts /mnt/host-scripts 2>/dev/null; then
+      SCRIPTS_DIR=/mnt/host-scripts
+    else
+      apk add --no-cache git >/dev/null 2>&1 || true
+      if [ ! -d /mnt/host-scripts/.git ]; then
+        git clone --depth=1 https://github.com/Cbetts1/VPS /mnt/host-scripts 2>&1 | tee /var/log/git-clone.log || true
+      fi
+      SCRIPTS_DIR=/mnt/host-scripts/layer1-vm1
+    fi
+    if [ ! -f "${SCRIPTS_DIR}/build-vm2.sh" ]; then
+      echo "[cloud-init] ERROR: build-vm2.sh not found in ${SCRIPTS_DIR} — check /var/log/git-clone.log" >&2
+      exit 1
+    fi
+    # Launch the VM2 build chain in the background so cloud-init can finish
+    nohup sh "${SCRIPTS_DIR}/build-vm2.sh" > /var/log/build-vm2.log 2>&1 &
   # Signal readiness
   - echo "VM1_READY=$(date -u +%s)" >> /etc/vm1-specs.conf
 
-final_message: "VM₁ is ready. Run: sh /mnt/host-scripts/build-vm2.sh"
+final_message: "VM₁ ready. SSH: ssh -p 10022 root@localhost (password: vps2025). Build log: /var/log/build-vm2.log"

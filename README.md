@@ -25,34 +25,59 @@ Phone
 
 ## Quick Start
 
-### 1 — On your phone (or any ARM/ARM64/x86_64 Linux host)
+### 1 — On your phone (Termux on Android — non-rooted, no KVM needed)
 
 ```sh
+pkg install git
+git clone https://github.com/Cbetts1/VPS
+cd VPS
+
 # Detect host capabilities and install QEMU if needed
 sh layer0-phone/detect-host.sh
 
-# Build and launch VM₁
+# Build and launch VM₁ (fully automated from here — no manual steps)
 sh layer0-phone/build-vm1.sh
 ```
 
-### 2 — Inside VM₁ (SSH to localhost:10022)
+VM₁ will boot, install its packages, and automatically kick off the entire
+build chain.  The chain runs without any further input:
 
-```sh
-ssh -p 10022 root@localhost
-sh /mnt/host-scripts/build-vm2.sh
+```
+VM₁ (boots) → clones repo → runs build-vm2.sh
+  → VM₂ (boots) → rebuild-self.sh × 4 doublings → build-vps.sh
+      → VPS (boots, runs all layer3-vps setup scripts)
 ```
 
-### 3 — Inside VM₂ (automatically runs rebuild loop)
+> **Note — this runs QEMU in pure software emulation (TCG) because Android
+> phones have no KVM.  Each layer takes longer than on a desktop — allow
+> 10–30 minutes per VM boot on a phone.**
 
-VM₂ runs `rebuild-self.sh` automatically via cloud-init.  
-It doubles its specs 4 times then calls `build-vps.sh`.
-
-### 4 — VPS is running (SSH :10080 / API :10081 / Web :10082)
+### 2 — Check progress (from Termux)
 
 ```sh
-ssh -p 10080 root@localhost
+# Watch VM₁ build log
+tail -f /data/data/com.termux/files/usr/tmp/vm1/vm1.log
+
+# Once VM₁ is up (~60 s), SSH in to watch the deeper chain
+ssh -p 10022 -o StrictHostKeyChecking=no root@localhost
+# password: vps2025
+tail -f /var/log/build-vm2.log
+```
+
+### 3 — VPS is running (SSH :10080 / API :10081 / Web :10082)
+
+Once the full chain completes, from inside VM₁:
+
+```sh
+# SSH into the VPS
+ssh -p 10080 -o StrictHostKeyChecking=no root@localhost
+# password: vps2025
+
+# Check the REST API
 curl http://localhost:10081/api/status
-open http://localhost:10082
+
+# Web console (open in a browser or use curl)
+curl http://localhost:10082
 ```
 
 ### 5 — vCloud operations (inside VPS)
