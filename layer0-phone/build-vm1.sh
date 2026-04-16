@@ -97,8 +97,11 @@ elif command -v mkisofs >/dev/null 2>&1; then
 elif command -v xorriso >/dev/null 2>&1; then
     xorriso -as mkisofs -output "${VM1_SEED}" -volid cidata -joliet -rock \
         "${SEED_DIR}/user-data" "${SEED_DIR}/meta-data" 2>/dev/null
+elif command -v python3 >/dev/null 2>&1; then
+    log "Using python3 fallback to create seed ISO …"
+    python3 "${SCRIPT_DIR}/make-seed-iso.py" "${VM1_SEED}" "${SEED_DIR}"
 else
-    log "WARNING: No ISO tool found (genisoimage/mkisofs/xorriso). Cloud-init seed skipped."
+    log "WARNING: No ISO tool found (genisoimage/mkisofs/xorriso/python3). Cloud-init seed skipped."
     VM1_SEED=""
 fi
 
@@ -116,15 +119,49 @@ else
     SEED_ARG=""
 fi
 
-# ── Copy VM₁ scripts into the disk (via a temporary overlay) ─────────────────
-# Scripts are embedded as a virtfs share at /mnt/host-scripts inside the VM
-SCRIPTS_ARG="-virtfs local,path=${REPO_ROOT}/layer1-vm1,mount_tag=host_scripts,security_model=none,id=scripts"
+# ── Virtfs (9p host-scripts share) ───────────────────────────────────────────
+# Only enable if the QEMU build supports virtfs; skip gracefully otherwise.
+SCRIPTS_ARG=""
+if [ "${VIRTFS_AVAILABLE:-false}" = "true" ]; then
+    SCRIPTS_ARG="-virtfs local,path=${REPO_ROOT}/layer1-vm1,mount_tag=host_scripts,security_model=none,id=scripts"
+else
+    log "Virtfs not available — host-scripts share disabled (run build-vm2.sh manually inside VM₁)"
+fi
+
+# ── Stop any existing VM₁ that occupies the SSH port ─────────────────────────
+# Re-using the port causes QEMU to exit immediately; kill the old instance first.
+_port_in_use() {
+    if command -v ss >/dev/null 2>&1; then
+        ss -tlnH 2>/dev/null | grep -q ":${VM1_SSH_PORT}[[:space:]]"
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tln 2>/dev/null | grep -q ":${VM1_SSH_PORT}[[:space:]]"
+    else
+        return 1  # cannot determine — assume free
+    fi
+}
+
+if _port_in_use; then
+    log "Port ${VM1_SSH_PORT} already bound — stopping existing VM₁ …"
+    if [ -f "${VM1_DIR}/vm1.pid" ]; then
+        OLD_PID="$(cat "${VM1_DIR}/vm1.pid")"
+        kill "${OLD_PID}" 2>/dev/null || true
+    else
+        # Best-effort: kill any QEMU forwarding that port
+        pkill -f "hostfwd=tcp::${VM1_SSH_PORT}" 2>/dev/null || true
+    fi
+    # Wait up to 5 s for the port to be released
+    _waited=0
+    while _port_in_use && [ "${_waited}" -lt 5 ]; do
+        sleep 1
+        _waited=$(( _waited + 1 ))
+    done
+fi
 
 # ── Launch VM₁ ────────────────────────────────────────────────────────────────
 log "Launching VM₁  (SSH will be available on localhost:${VM1_SSH_PORT}) …"
 log "Log: ${VM1_LOG}"
 
-# shellcheck disable=SC2086
+# shellcheck disable=SC2086  # intentional word-splitting: QEMU_MACHINE/ACCEL_ARG/etc are multi-word flags
 nohup "${QEMU_BIN}" \
     ${QEMU_MACHINE} \
     ${ACCEL_ARG} \
@@ -139,9 +176,11 @@ nohup "${QEMU_BIN}" \
     -device "virtio-net-pci,netdev=net0" \
     -serial file:"${VM1_LOG}" \
     -display none \
+    -pidfile "${VM1_DIR}/vm1.pid" \
     -daemonize 2>/dev/null || {
         log "daemonize not supported — starting in background via nohup"
-        # Remove -daemonize and background manually
+        # Remove -daemonize and background manually; capture PID ourselves
+        # shellcheck disable=SC2086  # intentional word-splitting for QEMU flag variables
         "${QEMU_BIN}" \
             ${QEMU_MACHINE} \
             ${ACCEL_ARG} \
@@ -155,7 +194,9 @@ nohup "${QEMU_BIN}" \
             -netdev "user,id=net0,hostfwd=tcp::${VM1_SSH_PORT}-:22" \
             -device "virtio-net-pci,netdev=net0" \
             -serial file:"${VM1_LOG}" \
-            -display none &
+            -display none \
+            >> "${VM1_LOG}" 2>&1 &
+        echo $! > "${VM1_DIR}/vm1.pid"
     }
 
 log "VM₁ started. PID file: ${VM1_DIR}/vm1.pid"

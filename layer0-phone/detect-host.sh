@@ -55,6 +55,8 @@ if [ -z "${QEMU_BIN}" ]; then
             armv7l|armhf)  pkg install -y qemu-system-arm ;;
             *)             pkg install -y qemu-system-x86-64-headless ;;
         esac
+        # Also install xorriso so the cloud-init seed ISO can be created.
+        pkg install -y xorriso 2>/dev/null || true
         # Re-probe after install
         for candidate in qemu-system-aarch64 qemu-system-arm qemu-system-x86_64; do
             if command -v "${candidate}" >/dev/null 2>&1; then
@@ -85,6 +87,33 @@ case "${QEMU_BIN}" in
 esac
 log "QEMU guest architecture: ${QEMU_ARCH}"
 
+# ── Virtfs (9p / Plan-9 filesystem) support ───────────────────────────────────
+# Check whether the selected QEMU binary understands -virtfs.  Not all Termux
+# builds include the virtio-9p device; the result is written to the caps file
+# so build-vm1.sh can skip the option gracefully when it is absent.
+VIRTFS_AVAILABLE="false"
+if "${QEMU_BIN}" -fsdev help 2>&1 | grep -q 'local\|security_model'; then
+    VIRTFS_AVAILABLE="true"
+    log "Virtfs (9p) support: available"
+else
+    log "Virtfs (9p) support: not available — host-scripts share will be skipped"
+fi
+
+# ── ISO creation tool detection ───────────────────────────────────────────────
+HAS_ISO_TOOL="false"
+for _isotool in genisoimage mkisofs xorriso; do
+    if command -v "${_isotool}" >/dev/null 2>&1; then
+        HAS_ISO_TOOL="true"
+        log "ISO tool found: ${_isotool}"
+        break
+    fi
+done
+if [ "${HAS_ISO_TOOL}" = "false" ] && command -v python3 >/dev/null 2>&1; then
+    log "No ISO tool found; python3 fallback will be used"
+elif [ "${HAS_ISO_TOOL}" = "false" ]; then
+    log "WARNING: No ISO tool and no python3 found — cloud-init seed will be skipped"
+fi
+
 # ── Derive safe VM₁ specs (half of host, min 1 CPU / 256 MB / 2 GB) ──────────
 VM1_CPUS="$(( HOST_CPUS / 2 > 0 ? HOST_CPUS / 2 : 1 ))"
 VM1_RAM_MB="$(( HOST_RAM_MB / 2 > 256 ? HOST_RAM_MB / 2 : 256 ))"
@@ -101,6 +130,8 @@ QEMU_ARCH=${QEMU_ARCH}
 VM1_CPUS=${VM1_CPUS}
 VM1_RAM_MB=${VM1_RAM_MB}
 VM1_DISK_GB=${VM1_DISK_GB}
+VIRTFS_AVAILABLE=${VIRTFS_AVAILABLE}
+HAS_ISO_TOOL=${HAS_ISO_TOOL}
 EOF
 
 log "Capabilities written to ${CAPS_FILE}"
