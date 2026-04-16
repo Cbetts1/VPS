@@ -37,9 +37,24 @@ from urllib.parse import urlparse, parse_qs
 PORT = int(os.environ.get("GATEWAY_PORT", "9000"))
 VOS_ROOT = os.environ.get("VOS_ROOT", "/vos")
 
-def run(cmd):
-    """Run shell command and return (stdout, returncode)."""
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+import re
+_SAFE_IDENT = re.compile(r'^[a-zA-Z0-9_.-]{1,64}$')
+_SAFE_INT   = re.compile(r'^\d{1,6}$')
+
+def _safe_ident(value):
+    """Raise ValueError if value contains shell-unsafe characters."""
+    if not _SAFE_IDENT.match(str(value)):
+        raise ValueError(f"Unsafe identifier: {value!r}")
+    return str(value)
+
+def _safe_int(value, default):
+    """Return value as a string of digits, or default."""
+    s = str(value)
+    return s if _SAFE_INT.match(s) else str(default)
+
+def run(argv):
+    """Run command list (no shell=True) and return (stdout, returncode)."""
+    r = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=30)
     return r.stdout.strip(), r.returncode
 
 def vos_status():
@@ -82,13 +97,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path in ("/", "/vos/status"):
             self.send_json(200, vos_status())
         elif path == "/vos/services":
-            out, _ = run(f"sh /mnt/host-scripts/layer5-vos/service-manager/services.sh list 2>&1")
+            out, _ = run(["sh", "/mnt/host-scripts/layer5-vos/service-manager/services.sh", "list"])
             self.send_json(200, {"services": out.splitlines()})
         elif path == "/vos/net":
-            out, _ = run(f"sh /mnt/host-scripts/layer5-vos/networking/vnet.sh list 2>&1")
+            out, _ = run(["sh", "/mnt/host-scripts/layer5-vos/networking/vnet.sh", "list"])
             self.send_json(200, {"networks": out.splitlines()})
         elif path == "/vos/nodes":
-            out, _ = run(f"sh /mnt/host-scripts/layer4-vcloud/virtual-nodes.sh list 2>&1")
+            out, _ = run(["sh", "/mnt/host-scripts/layer4-vcloud/virtual-nodes.sh", "list"])
             self.send_json(200, {"nodes": out.splitlines()})
         else:
             self.send_json(404, {"error": "not found", "path": path})
@@ -107,26 +122,42 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if not pkg:
                 self.send_json(400, {"error": "missing 'package' field"})
                 return
-            out, rc = run(f"sh /mnt/host-scripts/layer5-vos/package-manager/vpkg.sh install {pkg} 2>&1")
+            try:
+                safe_pkg = _safe_ident(pkg)
+            except ValueError as e:
+                self.send_json(400, {"error": str(e)})
+                return
+            out, rc = run(["sh", "/mnt/host-scripts/layer5-vos/package-manager/vpkg.sh", "install", safe_pkg])
             self.send_json(200 if rc == 0 else 500, {"output": out, "rc": rc})
 
         elif path == "/vos/node/spawn":
-            name = data.get("name", f"node-{int(time.time())}")
-            cpus = data.get("cpus", 1)
-            ram  = data.get("ram_mb", 256)
-            disk = data.get("disk_gb", 4)
-            out, rc = run(
-                f"sh /mnt/host-scripts/layer4-vcloud/virtual-nodes.sh "
-                f"create {name} {cpus} {ram} {disk} 2>&1"
-            )
+            try:
+                name = _safe_ident(data.get("name", f"node-{int(time.time())}"))
+            except ValueError as e:
+                self.send_json(400, {"error": str(e)})
+                return
+            cpus = _safe_int(data.get("cpus", 1), 1)
+            ram  = _safe_int(data.get("ram_mb", 256), 256)
+            disk = _safe_int(data.get("disk_gb", 4), 4)
+            out, rc = run([
+                "sh", "/mnt/host-scripts/layer4-vcloud/virtual-nodes.sh",
+                "create", name, cpus, ram, disk,
+            ])
             self.send_json(200 if rc == 0 else 500, {"output": out, "rc": rc, "name": name})
 
         elif path == "/vos/vps/spawn":
-            name = data.get("name", f"vps-{int(time.time())}")
-            out, rc = run(
-                f"sh /mnt/host-scripts/layer4-vcloud/spawn-vps.sh "
-                f"{name} {data.get('cpus',2)} {data.get('ram_mb',1024)} {data.get('disk_gb',8)} 2>&1"
-            )
+            try:
+                name = _safe_ident(data.get("name", f"vps-{int(time.time())}"))
+            except ValueError as e:
+                self.send_json(400, {"error": str(e)})
+                return
+            cpus = _safe_int(data.get("cpus", 2), 2)
+            ram  = _safe_int(data.get("ram_mb", 1024), 1024)
+            disk = _safe_int(data.get("disk_gb", 8), 8)
+            out, rc = run([
+                "sh", "/mnt/host-scripts/layer4-vcloud/spawn-vps.sh",
+                name, cpus, ram, disk,
+            ])
             self.send_json(200 if rc == 0 else 500, {"output": out, "rc": rc, "name": name})
 
         else:

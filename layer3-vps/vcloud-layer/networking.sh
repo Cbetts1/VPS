@@ -39,16 +39,17 @@ if command -v wg >/dev/null 2>&1; then
     if [ ! -f "${WG_DIR}/vcloud_private.key" ]; then
         wg genkey > "${WG_DIR}/vcloud_private.key"
         wg pubkey < "${WG_DIR}/vcloud_private.key" > "${WG_DIR}/vcloud_public.key"
+        chmod 600 "${WG_DIR}/vcloud_private.key"
         log "WireGuard keypair generated."
     fi
-    PRIVKEY="$(cat "${WG_DIR}/vcloud_private.key")"
     if [ ! -f "${WG_DIR}/vcloud.conf" ]; then
         cat > "${WG_DIR}/vcloud.conf" <<EOF
 [Interface]
 Address = 10.200.0.1/24
 ListenPort = 51820
-PrivateKey = ${PRIVKEY}
+PostUp   = wg set vcloud private-key ${WG_DIR}/vcloud_private.key
 EOF
+        chmod 600 "${WG_DIR}/vcloud.conf"
         log "WireGuard config written: ${WG_DIR}/vcloud.conf"
     fi
     # Bring up WireGuard interface

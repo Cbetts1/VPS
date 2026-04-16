@@ -71,6 +71,7 @@ VM2_VDISK_GB=${VDISK_GB}
 VM2_VERSION=${VERSION}
 VM2_AT_CAP=$([ "${VERSION}" -ge "${MAX_VERSION}" ] && echo true || echo false)
 EOF
+chmod 600 "${SPECS_FILE}"
 
 log "Specs written to ${SPECS_FILE}"
 cat "${SPECS_FILE}"

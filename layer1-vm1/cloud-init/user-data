@@ -9,8 +9,10 @@ manage_etc_hosts: true
 users:
   - name: root
     lock_passwd: false
-    hashed_passwd: "$6$rounds=4096$saltsalt$placeholder_replace_in_prod"
-    ssh_authorized_keys: []       # add your public key here for production
+    # Set a strong hashed password here for production deployments.
+    # Generate with: openssl passwd -6 'yourpassword'
+    # hashed_passwd: "$6$rounds=500000$<your-random-salt>$<hash>"
+    ssh_authorized_keys: []       # add your public key here
 
 ssh_pwauth: true
 disable_root: false
