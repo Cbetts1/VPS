@@ -215,7 +215,9 @@ _vm1_port_open() {
 import socket, sys
 s = socket.socket()
 s.settimeout(3)
-sys.exit(0 if s.connect_ex(('127.0.0.1', ${VM1_SSH_PORT})) == 0 else 1)
+rc = s.connect_ex(('127.0.0.1', ${VM1_SSH_PORT}))
+s.close()
+sys.exit(0 if rc == 0 else 1)
 PYEOF
     else
         # Last resort: attempt an SSH handshake and accept any non-reset result
@@ -245,7 +247,7 @@ done
 printf '\n'
 
 if [ "${_ready}" = "true" ]; then
-    log "VM₁ SSH is ready (waited ~${_waited}s)"
+    log "VM₁ SSH is ready (waited ${_waited}s)"
     log "Connect:  ssh -p ${VM1_SSH_PORT} -o StrictHostKeyChecking=no root@localhost  (password: vps2025)"
     if [ "${VIRTFS_AVAILABLE:-false}" = "true" ]; then
         log "Inside VM₁ run: sh /mnt/host-scripts/build-vm2.sh"
