@@ -5,7 +5,7 @@
 # Outputs /tmp/host-caps.env which is sourced by build-vm1.sh.
 set -eu
 
-CAPS_FILE="/tmp/host-caps.env"
+CAPS_FILE="${TMPDIR:-/tmp}/host-caps.env"
 
 log() { printf '[detect-host] %s\n' "$*"; }
 
