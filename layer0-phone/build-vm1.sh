@@ -25,8 +25,10 @@ fi
 . "${CAPS_FILE}"
 
 # ── Alpine Linux minimal image URL (multi-arch) ───────────────────────────────
+# Use QEMU_ARCH (guest arch) rather than host ARCH so the ISO and machine flags
+# always match the selected QEMU binary (e.g. qemu-system-x86_64 on aarch64).
 ALPINE_VERSION="3.19.1"
-case "${ARCH}" in
+case "${QEMU_ARCH:-${ARCH}}" in
     aarch64|arm64)
         ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-virt-${ALPINE_VERSION}-aarch64.iso"
         QEMU_MACHINE="-machine virt -cpu cortex-a57"
@@ -39,7 +41,13 @@ case "${ARCH}" in
         ;;
     *)
         ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-virt-${ALPINE_VERSION}-x86_64.iso"
-        QEMU_MACHINE="-machine q35 -cpu host"
+        # Use the native host CPU when KVM is available; fall back to a pure
+        # software model (qemu64) for TCG cross-emulation.
+        if [ "${KVM_AVAILABLE}" = "true" ]; then
+            QEMU_MACHINE="-machine q35 -cpu host"
+        else
+            QEMU_MACHINE="-machine q35 -cpu qemu64"
+        fi
         BIOS_ARGS=""
         ;;
 esac
