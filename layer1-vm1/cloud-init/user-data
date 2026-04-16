@@ -1,0 +1,65 @@
+#cloud-config
+# layer1-vm1/cloud-init/user-data
+# Auto-configures VM₁ on first boot.
+# All steps are idempotent.
+
+hostname: vm1
+manage_etc_hosts: true
+
+users:
+  - name: root
+    lock_passwd: false
+    # Set a strong hashed password here for production deployments.
+    # Generate with: openssl passwd -6 'yourpassword'
+    # hashed_passwd: "$6$rounds=500000$<your-random-salt>$<hash>"
+    ssh_authorized_keys: []       # add your public key here
+
+ssh_pwauth: true
+disable_root: false
+
+# Install required packages
+packages:
+  - qemu-system-x86_64
+  - qemu-img
+  - qemu-system-aarch64
+  - openssh
+  - git
+  - wget
+  - curl
+  - xorriso
+  - util-linux
+
+package_update: true
+package_upgrade: false
+
+# Write VM₁ spec file
+write_files:
+  - path: /etc/vm1-specs.conf
+    content: |
+      VM1_VCPUS=1
+      VM1_VRAM_MB=512
+      VM1_VDISK_GB=4
+      VM1_VERSION=1
+    permissions: '0644'
+
+  - path: /etc/profile.d/vm1-env.sh
+    content: |
+      export VM1_SCRIPTS=/mnt/host-scripts
+    permissions: '0644'
+
+runcmd:
+  # Mount virtfs share if available
+  - |
+    if [ -d /sys/bus/virtio ] && grep -q host_scripts /proc/mounts 2>/dev/null; then
+      echo "host_scripts already mounted"
+    else
+      mkdir -p /mnt/host-scripts
+      mount -t 9p -o trans=virtio,version=9p2000.L host_scripts /mnt/host-scripts || true
+    fi
+  # Enable SSH
+  - rc-update add sshd default
+  - rc-service sshd start
+  # Signal readiness
+  - echo "VM1_READY=$(date -u +%s)" >> /etc/vm1-specs.conf
+
+final_message: "VM₁ is ready. Run: sh /mnt/host-scripts/build-vm2.sh"
