@@ -29,7 +29,8 @@ Phone
 
 ```sh
 pkg install git
-git clone https://github.com/Cbetts1/VPS
+# Clone the repo (safe to re-run — pulls latest if the directory already exists)
+git -C VPS pull 2>/dev/null || git clone https://github.com/Cbetts1/VPS
 cd VPS
 
 # Detect host capabilities and install QEMU if needed
@@ -55,10 +56,10 @@ VM₁ (boots) → clones repo → runs build-vm2.sh
 ### 2 — Check progress (from Termux)
 
 ```sh
-# Watch VM₁ build log
+# Watch VM₁ boot log (build-vm1.sh waits and notifies you when SSH is ready)
 tail -f /data/data/com.termux/files/usr/tmp/vm1/vm1.log
 
-# Once VM₁ is up (~60 s), SSH in to watch the deeper chain
+# Once SSH is ready, connect to watch the deeper build chain
 ssh -p 10022 -o StrictHostKeyChecking=no root@localhost
 # password: vps2025
 tail -f /var/log/build-vm2.log
@@ -80,14 +81,14 @@ curl http://localhost:10081/api/status
 curl http://localhost:10082
 ```
 
-### 5 — vCloud operations (inside VPS)
+### 4 — vCloud operations (inside VPS)
 
 ```sh
 sh layer4-vcloud/virtual-nodes.sh create node1 2 512 8
 sh layer4-vcloud/spawn-vps.sh vps2 2 1024 8
 ```
 
-### 6 — vOS boot (inside vCloud node or VPS)
+### 5 — vOS boot (inside vCloud node or VPS)
 
 ```sh
 sh layer5-vos/boot/sequence.sh
