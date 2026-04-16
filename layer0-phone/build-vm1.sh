@@ -1,14 +1,14 @@
 #!/usr/bin/env sh
 # layer0-phone/build-vm1.sh
 # Creates and launches VM₁ on the phone host using QEMU.
-# Sources /tmp/host-caps.env produced by detect-host.sh.
+# Sources host-caps.env (in $TMPDIR or /tmp) produced by detect-host.sh.
 # Idempotent — if the disk image already exists it is reused.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CAPS_FILE="/tmp/host-caps.env"
-VM1_DIR="/tmp/vm1"
+CAPS_FILE="${TMPDIR:-/tmp}/host-caps.env"
+VM1_DIR="${TMPDIR:-/tmp}/vm1"
 VM1_DISK="${VM1_DIR}/vm1.qcow2"
 VM1_SEED="${VM1_DIR}/seed.iso"
 VM1_SSH_PORT=10022
