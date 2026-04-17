@@ -207,21 +207,38 @@ log "VM₁ started. PID file: ${VM1_DIR}/vm1.pid"
 # guess how long to wait.
 log "Polling for SSH on localhost:${VM1_SSH_PORT} (TCG may take 10-20 min) …"
 
-_vm1_port_open() {
-    if command -v nc >/dev/null 2>&1; then
-        nc -z -w 3 127.0.0.1 "${VM1_SSH_PORT}" 2>/dev/null
-    elif command -v python3 >/dev/null 2>&1; then
+_vm1_ssh_ready() {
+    # Check for an SSH protocol banner (e.g. "SSH-2.0-OpenSSH_...").
+    # QEMU's SLIRP networking opens the host-side port immediately on start,
+    # so a plain TCP-connect check returns true before the guest sshd starts.
+    # Reading the first bytes and looking for the "SSH-" banner ensures the
+    # guest SSH daemon is actually running and ready to accept connections.
+    if command -v python3 >/dev/null 2>&1; then
         python3 - <<PYEOF 2>/dev/null
 import socket, sys
 s = socket.socket()
-s.settimeout(3)
-rc = s.connect_ex(('127.0.0.1', ${VM1_SSH_PORT}))
-s.close()
-sys.exit(0 if rc == 0 else 1)
+s.settimeout(5)
+try:
+    s.connect(('127.0.0.1', ${VM1_SSH_PORT}))
+    banner = s.recv(32)
+    sys.exit(0 if banner.startswith(b'SSH-') else 1)
+except Exception:
+    sys.exit(1)
+finally:
+    s.close()
 PYEOF
+    elif command -v nc >/dev/null 2>&1; then
+        # Keep stdin open via `sleep` so nc doesn't exit before the SSH banner
+        # arrives.  The server sends its banner immediately on connect; we read
+        # the first 32 bytes and check for the "SSH-" prefix.
+        _banner="$(sleep 5 | nc -w 5 127.0.0.1 "${VM1_SSH_PORT}" 2>/dev/null | head -c 32 || true)"
+        case "${_banner}" in
+            SSH-*) return 0 ;;
+            *)     return 1 ;;
+        esac
     else
-        # Last resort: attempt an SSH handshake and accept any non-reset result
-        _r="$(ssh -o BatchMode=yes -o ConnectTimeout=4 \
+        # Last resort: attempt an SSH handshake and accept any non-refused result
+        _r="$(ssh -o BatchMode=yes -o ConnectTimeout=5 \
             -o StrictHostKeyChecking=no -o NumberOfPasswordPrompts=0 \
             -p "${VM1_SSH_PORT}" root@localhost true 2>&1 || true)"
         case "${_r}" in
@@ -236,7 +253,7 @@ _interval=15     # check every 15 seconds
 _waited=0
 _ready=false
 while [ "${_waited}" -lt "${_max_wait}" ]; do
-    if _vm1_port_open; then
+    if _vm1_ssh_ready; then
         _ready=true
         break
     fi
